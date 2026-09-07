@@ -18,6 +18,15 @@ router.get('/', async (req, res) => {
   res.json(rows);
 });
 
+// Distinct class/section combinations that currently have active students,
+// used to populate dropdowns instead of free-text class/section inputs.
+router.get('/meta/class-sections', async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT class, sec FROM students WHERE is_deleted = false ORDER BY class, sec`
+  );
+  res.json(rows);
+});
+
 router.post('/', requireRole('admin'), async (req, res) => {
   const { class: cls, sec, admissionNo, examNo, name } = req.body || {};
   if (!cls || !sec || !admissionNo || !name) return res.status(400).json({ error: 'class, sec, admissionNo, name required' });
