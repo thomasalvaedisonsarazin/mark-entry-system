@@ -8,7 +8,18 @@ const state = {
   view: 'login',
   exams: [],
   currentExamId: null,
+  classSections: null, // [{class, sec}, ...] — cached after first load
 };
+
+async function loadClassSections() {
+  if (state.classSections) return state.classSections;
+  try {
+    state.classSections = await api('/students/meta/class-sections', { silent: true });
+  } catch {
+    state.classSections = [];
+  }
+  return state.classSections;
+}
 
 async function boot() {
   const sid = getSessionId();
@@ -215,8 +226,8 @@ function viewMarkEntry() {
   const resultArea = el('div');
 
   const examSel = el('select');
-  const clsInput = el('input', { placeholder: 'Class (e.g. VI, XI)' });
-  const secInput = el('input', { placeholder: 'Section (e.g. A)' });
+  const clsSel = el('select');
+  const secSel = el('select');
   const subjSel = el('select');
   const loadBtn = el('button', {}, 'Load');
 
@@ -226,28 +237,44 @@ function viewMarkEntry() {
     for (const ex of state.exams) examSel.appendChild(el('option', { value: ex.id }, `${ex.exam_name} (${ex.year_label})`));
   });
 
+  loadClassSections().then((rows) => {
+    clsSel.innerHTML = '';
+    clsSel.appendChild(el('option', { value: '' }, '-- class --'));
+    const classes = [...new Set(rows.map(r => r.class))];
+    for (const c of classes) clsSel.appendChild(el('option', { value: c }, c));
+  });
+
+  function refreshSections() {
+    secSel.innerHTML = '';
+    subjSel.innerHTML = '';
+    if (!clsSel.value) return;
+    secSel.appendChild(el('option', { value: '' }, '-- section --'));
+    const secs = state.classSections.filter(r => r.class === clsSel.value).map(r => r.sec);
+    for (const s of secs) secSel.appendChild(el('option', { value: s }, s));
+  }
+  clsSel.onchange = () => { refreshSections(); };
+
   async function refreshSubjects() {
     subjSel.innerHTML = '';
-    if (!clsInput.value || !secInput.value) return;
+    if (!clsSel.value || !secSel.value) return;
     try {
-      const subjects = await api(`/exams/subjects?class=${encodeURIComponent(clsInput.value)}&sec=${encodeURIComponent(secInput.value)}`, { silent: true });
+      const subjects = await api(`/exams/subjects?class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}`, { silent: true });
       for (const s of subjects) subjSel.appendChild(el('option', { value: s }, s === 'Language' ? 'Tamil (Language)' : s));
     } catch (err) {
       subjSel.appendChild(el('option', { value: '' }, 'No subject set for this class/section'));
     }
   }
-  clsInput.oninput = refreshSubjects;
-  secInput.oninput = refreshSubjects;
+  secSel.onchange = refreshSubjects;
 
   loadBtn.onclick = async () => {
     resultArea.innerHTML = '';
-    if (!examSel.value || !clsInput.value || !secInput.value || !subjSel.value) {
+    if (!examSel.value || !clsSel.value || !secSel.value || !subjSel.value) {
       toast('Select exam, class, section, and subject first.');
       return;
     }
     try {
-      const data = await api(`/marks?examId=${examSel.value}&class=${encodeURIComponent(clsInput.value)}&sec=${encodeURIComponent(secInput.value)}&subject=${encodeURIComponent(subjSel.value)}`);
-      resultArea.appendChild(markEntryTable(examSel.value, clsInput.value, secInput.value, subjSel.value, data));
+      const data = await api(`/marks?examId=${examSel.value}&class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}&subject=${encodeURIComponent(subjSel.value)}`);
+      resultArea.appendChild(markEntryTable(examSel.value, clsSel.value, secSel.value, subjSel.value, data));
     } catch {
       // toast already shown by api()
     }
@@ -255,8 +282,8 @@ function viewMarkEntry() {
 
   const row = el('div', { class: 'row' }, [
     el('div', {}, [el('label', {}, 'Exam'), examSel]),
-    el('div', {}, [el('label', {}, 'Class'), clsInput]),
-    el('div', {}, [el('label', {}, 'Section'), secInput]),
+    el('div', {}, [el('label', {}, 'Class'), clsSel]),
+    el('div', {}, [el('label', {}, 'Section'), secSel]),
     el('div', {}, [el('label', {}, 'Subject'), subjSel]),
   ]);
   card.appendChild(row);
