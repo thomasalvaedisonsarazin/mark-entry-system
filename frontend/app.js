@@ -147,6 +147,8 @@ function topbar() {
   if (state.user.isAdmin || state.user.isSuperAdmin) {
     nav.appendChild(link('Exams & Config', 'examConfig'));
     nav.appendChild(link('Locking', 'locking'));
+    nav.appendChild(link('Rank List', 'rankList'));
+    nav.appendChild(link('Rank Cards', 'rankCards'));
     nav.appendChild(link('Students', 'students'));
     nav.appendChild(link('Teachers', 'teachers'));
   }
@@ -176,6 +178,8 @@ function renderView() {
     case 'markEntry': return viewMarkEntry();
     case 'examConfig': return viewExamConfig();
     case 'locking': return viewLocking();
+    case 'rankList': return viewRankList();
+    case 'rankCards': return viewRankCards();
     case 'students': return viewStudents();
     case 'teachers': return viewTeachers();
     default: return viewDashboard();
@@ -629,6 +633,281 @@ function viewTeachers() {
   }
   loadList();
   return wrap;
+}
+
+// ---------------------------------------------------------------------------
+// Admin: Rank List
+// ---------------------------------------------------------------------------
+
+function viewRankList() {
+  const wrap = el('div');
+  wrap.appendChild(el('h2', {}, 'Rank List'));
+  const card = el('div', { class: 'card' });
+  const resultArea = el('div');
+
+  const examSel = el('select');
+  const clsSel = el('select');
+  const secSel = el('select');
+  const loadBtn = el('button', {}, 'Load');
+
+  loadExams().then(() => {
+    examSel.innerHTML = '';
+    examSel.appendChild(el('option', { value: '' }, '-- exam --'));
+    for (const ex of state.exams) examSel.appendChild(el('option', { value: ex.id }, `${ex.exam_name} (${ex.year_label})`));
+  });
+  loadClassSections().then((rows) => {
+    clsSel.innerHTML = '';
+    clsSel.appendChild(el('option', { value: '' }, '-- class --'));
+    for (const c of [...new Set(rows.map((r) => r.class))]) clsSel.appendChild(el('option', { value: c }, c));
+  });
+  clsSel.onchange = () => {
+    secSel.innerHTML = '';
+    secSel.appendChild(el('option', { value: '' }, '-- section --'));
+    for (const s of state.classSections.filter((r) => r.class === clsSel.value).map((r) => r.sec)) {
+      secSel.appendChild(el('option', { value: s }, s));
+    }
+  };
+
+  loadBtn.onclick = async () => {
+    resultArea.innerHTML = '';
+    if (!examSel.value || !clsSel.value || !secSel.value) { toast('Select exam, class, and section first.'); return; }
+    try {
+      const rows = await api(`/ranks/list?examId=${examSel.value}&class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}`);
+      resultArea.appendChild(rankListTable(rows));
+    } catch {}
+  };
+
+  card.appendChild(el('div', { class: 'row' }, [
+    el('div', {}, [el('label', {}, 'Exam'), examSel]),
+    el('div', {}, [el('label', {}, 'Class'), clsSel]),
+    el('div', {}, [el('label', {}, 'Section'), secSel]),
+  ]));
+  card.appendChild(el('div', { style: 'margin-top:14px' }, loadBtn));
+  wrap.appendChild(card);
+  wrap.appendChild(resultArea);
+  return wrap;
+}
+
+function rankListTable(rows) {
+  const wrap = el('div', { class: 'card' });
+  if (!rows.length) { wrap.appendChild(el('p', { class: 'muted' }, 'No students found.')); return wrap; }
+  const subjects = rows[0].subjects.map((s) => s.subject);
+  const table = el('table');
+  const headCells = [el('th', {}, 'Adm No'), el('th', {}, 'Name')];
+  for (const subj of subjects) headCells.push(el('th', {}, displayLabelFor(subj)));
+  headCells.push(el('th', {}, 'Total'), el('th', {}, '%'), el('th', {}, 'Result'), el('th', {}, 'Rank'));
+  table.appendChild(el('tr', {}, headCells));
+
+  for (const r of rows) {
+    const cells = [el('td', {}, String(r.admissionNo)), el('td', {}, r.name)];
+    for (const subj of subjects) {
+      const sr = r.subjects.find((x) => x.subject === subj);
+      const shown = !sr || !sr.configured ? '' : (!sr.complete ? 'AB' : `${Math.round(sr.total)}/${sr.max}`);
+      cells.push(el('td', {}, shown));
+    }
+    cells.push(
+      el('td', {}, `${r.grandTotal}/${r.grandMax}`),
+      el('td', {}, `${r.percentage}%`),
+      el('td', {}, r.result),
+      el('td', {}, r.rank == null ? '-' : String(r.rank)),
+    );
+    table.appendChild(el('tr', {}, cells));
+  }
+  wrap.appendChild(table);
+  return wrap;
+}
+
+// 'Language' always displays as 'Tamil' everywhere in the UI, per the
+// original system's rule (internal key never changes, only the label).
+function displayLabelFor(subjectKey) {
+  return subjectKey === 'Language' ? 'Tamil' : subjectKey;
+}
+
+// ---------------------------------------------------------------------------
+// Admin: Rank Cards (printable)
+// ---------------------------------------------------------------------------
+
+function viewRankCards() {
+  const wrap = el('div');
+  wrap.appendChild(el('h2', {}, 'Rank Cards'));
+  const card = el('div', { class: 'card' });
+  const statusArea = el('div');
+  const cardArea = el('div', { id: 'rankCardArea' });
+
+  const clsSel = el('select');
+  const secSel = el('select');
+  const admInput = el('input', { placeholder: 'Admission No (optional — leave blank for whole section)' });
+  const genBtn = el('button', {}, 'Generate');
+  const printBtn = el('button', { class: 'secondary', style: 'display:none' }, 'Print / Save as PDF');
+  printBtn.onclick = () => window.print();
+
+  loadClassSections().then((rows) => {
+    clsSel.innerHTML = '';
+    clsSel.appendChild(el('option', { value: '' }, '-- class --'));
+    for (const c of [...new Set(rows.map((r) => r.class))]) clsSel.appendChild(el('option', { value: c }, c));
+  });
+  clsSel.onchange = () => {
+    secSel.innerHTML = '';
+    secSel.appendChild(el('option', { value: '' }, '-- section --'));
+    for (const s of state.classSections.filter((r) => r.class === clsSel.value).map((r) => r.sec)) {
+      secSel.appendChild(el('option', { value: s }, s));
+    }
+  };
+
+  genBtn.onclick = async () => {
+    statusArea.innerHTML = '';
+    cardArea.innerHTML = '';
+    printBtn.style.display = 'none';
+    if (!clsSel.value || !secSel.value) { toast('Select class and section first.'); return; }
+
+    try {
+      const school = await api('/settings', { silent: true });
+
+      if (admInput.value.trim()) {
+        // Single student — always allowed as a preview, no lock requirement
+        // (matches the old system: "View Rank Card" previews anytime; only
+        // bulk section generation requires everything locked first).
+        const oneCard = await api(`/ranks/cards/${encodeURIComponent(admInput.value.trim())}?class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}`);
+        cardArea.appendChild(buildRankCardEl(oneCard, school));
+        printBtn.style.display = '';
+        return;
+      }
+
+      const lockStatus = await api(`/ranks/lock-status?class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}`, { silent: true });
+      if (!lockStatus.fullyLocked) {
+        const list = lockStatus.unlocked.map((u) => `${u.examName} — ${displayLabelFor(u.subject)}`).join(', ');
+        statusArea.appendChild(el('div', { class: 'locked-banner' },
+          `Rank Cards can only be generated once every exam/subject for this section is locked. Still open: ${list || '(nothing configured yet)'}`));
+        return;
+      }
+
+      const cards = await api(`/ranks/cards?class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}`);
+      if (!cards.length) { statusArea.appendChild(el('p', { class: 'muted' }, 'No students found.')); return; }
+      for (const c of cards) cardArea.appendChild(buildRankCardEl(c, school));
+      printBtn.style.display = '';
+    } catch {}
+  };
+
+  card.appendChild(el('div', { class: 'row' }, [
+    el('div', {}, [el('label', {}, 'Class'), clsSel]),
+    el('div', {}, [el('label', {}, 'Section'), secSel]),
+    el('div', {}, [el('label', {}, 'Admission No (optional)'), admInput]),
+  ]));
+  card.appendChild(el('div', { style: 'margin-top:14px' }, [genBtn, printBtn]));
+  wrap.appendChild(card);
+  wrap.appendChild(statusArea);
+  wrap.appendChild(cardArea);
+  return wrap;
+}
+
+/**
+ * Merges Bio-Botany + Bio-Zoology into one "Biology" column for display,
+ * exactly like the old system's mergeBiologyForCard_ — data-driven (only
+ * fires when both halves are actually present in the subject list), works
+ * on the RAW as-entered marks (never the EMIS-converted figures).
+ */
+function mergeBiologyForCard(subjects, exams) {
+  const iB = subjects.indexOf('Bio-Botany');
+  const iZ = subjects.indexOf('Bio-Zoology');
+  if (iB === -1 || iZ === -1) return { subjects, exams };
+
+  const mergedSubjects = subjects.filter((s) => s !== 'Bio-Botany' && s !== 'Bio-Zoology');
+  mergedSubjects.splice(Math.min(iB, iZ), 0, 'Biology');
+
+  const mergedExams = exams.map((ex) => {
+    const botany = ex.subjects.find((s) => s.subject === 'Bio-Botany');
+    const zoology = ex.subjects.find((s) => s.subject === 'Bio-Zoology');
+    const rest = ex.subjects.filter((s) => s.subject !== 'Bio-Botany' && s.subject !== 'Bio-Zoology');
+    if (botany || zoology) {
+      const configured = (botany && botany.configured) || (zoology && zoology.configured);
+      const complete = configured && (!botany || botany.complete) && (!zoology || zoology.complete);
+      const total = (botany ? botany.total : 0) + (zoology ? zoology.total : 0);
+      const max = (botany ? botany.max : 0) + (zoology ? zoology.max : 0);
+      rest.push({ subject: 'Biology', configured, complete, total, max });
+    }
+    return { ...ex, subjects: rest };
+  });
+
+  return { subjects: mergedSubjects, exams: mergedExams };
+}
+
+/**
+ * Picks one "Max" figure per exam row for the card header column — the max
+ * most subjects in that exam actually share (e.g. Weekly Test = 25 for
+ * every subject), matching the old system's examRepresentativeMax_.
+ */
+function examRepresentativeMax(ex) {
+  const counts = {};
+  let best = null, bestCount = 0;
+  for (const s of ex.subjects) {
+    if (s.configured && s.max) {
+      counts[s.max] = (counts[s.max] || 0) + 1;
+      if (counts[s.max] > bestCount) { bestCount = counts[s.max]; best = s.max; }
+    }
+  }
+  return best;
+}
+
+/**
+ * Printable rank card matching the old system's official progress-report
+ * layout: one row per exam, one column per subject (actual mark, not any
+ * EMIS-converted figure), AB for absent/incomplete, TOT as total/max, RANK
+ * blank unless that exam's result is Pass, REMARK as Pass/Fail/Incomplete.
+ */
+function buildRankCardEl(card, school) {
+  const allSubjects = [];
+  for (const ex of card.exams) for (const s of ex.subjects) if (!allSubjects.includes(s.subject)) allSubjects.push(s.subject);
+  const merged = mergeBiologyForCard(allSubjects, card.exams);
+
+  const page = el('div', { class: 'rank-card-page' });
+  page.appendChild(el('div', { class: 'pr-header' }, [
+    el('div', { class: 'pr-title-row' }, [el('h2', {}, school.school_name || '[School name — set in School Settings]')]),
+    el('div', { class: 'pr-header-row' }, [
+      el('span', {}, `PROGRESS REPORT${school.academic_year ? ' ' + school.academic_year : ''}`),
+      school.phone ? el('span', { class: 'pr-phone' }, `PH : ${school.phone}`) : el('span'),
+    ]),
+  ]));
+  page.appendChild(el('div', { class: 'pr-meta-row' }, [
+    el('span', {}, [el('b', {}, 'NAME : '), card.name]),
+    el('span', {}, [el('b', {}, 'CLASS : '), `${card.class}-${card.sec}`]),
+    el('span', {}, [el('b', {}, 'ADM.NO : '), String(card.admissionNo)]),
+    el('span', {}, [el('b', {}, 'EX.NO : '), String(card.examNo ?? '')]),
+  ]));
+
+  if (!merged.exams.length) {
+    page.appendChild(el('p', {}, [el('i', {}, 'No exams recorded yet.')]));
+    return page;
+  }
+
+  const headRow = [el('th', {}, 'Examination'), el('th', {}, 'Max')];
+  for (const subj of merged.subjects) headRow.push(el('th', {}, displayLabelFor(subj)));
+  headRow.push(el('th', {}, 'TOT'), el('th', {}, 'RANK'), el('th', {}, 'REMARK'));
+  const table = el('table', { class: 'pr-grid' }, [el('tr', {}, headRow)]);
+
+  for (const ex of merged.exams) {
+    const maxPerSubj = examRepresentativeMax(ex);
+    const rowCells = [el('td', { class: 'pr-exam-name' }, ex.examName), el('td', {}, maxPerSubj != null ? String(maxPerSubj) : '')];
+    for (const subj of merged.subjects) {
+      const sub = ex.subjects.find((s) => s.subject === subj);
+      let cell = '';
+      if (sub && sub.configured) cell = (!sub.complete || Math.round(sub.total) === 0) ? 'AB' : String(Math.round(sub.total));
+      rowCells.push(el('td', {}, cell));
+    }
+    rowCells.push(
+      el('td', {}, `${ex.grandTotal}/${ex.grandMax}`),
+      el('td', {}, ex.rank == null ? '-' : String(ex.rank)),
+      el('td', {}, ex.result),
+    );
+    table.appendChild(el('tr', {}, rowCells));
+  }
+  page.appendChild(table);
+
+  page.appendChild(el('div', { class: 'pc-sign-row' }, [
+    el('div', { class: 'pc-sign-block' }, [el('div', { class: 'pc-sign-line' }, ' '), "Class Teacher's Signature"]),
+    el('div', { class: 'pc-sign-block' }, [el('div', { class: 'pc-sign-line' }, ' '), "Principal's Signature"]),
+  ]));
+
+  return page;
 }
 
 boot();
