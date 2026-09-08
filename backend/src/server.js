@@ -9,6 +9,8 @@ import { router as examsRouter } from './routes/exams.js';
 import { router as marksRouter } from './routes/marks.js';
 import { router as locksRouter } from './routes/locks.js';
 import { router as teachersRouter } from './routes/teachers.js';
+import { router as ranksRouter } from './routes/ranks.js';
+import { router as settingsRouter } from './routes/settings.js';
 
 const app = express();
 app.use(cors({ origin: (process.env.CORS_ORIGIN || '*').split(',') }));
@@ -27,6 +29,8 @@ app.use('/api/exams', examsRouter);
 app.use('/api/marks', marksRouter);
 app.use('/api/locks', locksRouter);
 app.use('/api/teachers', teachersRouter);
+app.use('/api/ranks', ranksRouter);
+app.use('/api/settings', settingsRouter);
 
 // Every route above sends a JSON error on failure — this is the last-resort
 // catch so an unhandled exception still returns JSON, never a silent hang
