@@ -51,16 +51,22 @@ router.get('/list', async (req, res) => {
 
 // Whether every exam/subject for this class+section is locked — gates bulk
 // Rank Card generation, exactly like the old getRankCardLockStatus.
+// Pass examId to scope the check to just that one exam instead of every
+// exam in the current academic year (used when generating a single-exam
+// Rank Card instead of the full multi-exam progress report).
 router.get('/lock-status', async (req, res) => {
-  const { class: cls, sec } = req.query;
+  const { class: cls, sec, examId } = req.query;
   if (!cls || !sec) return res.status(400).json({ error: 'class, sec required' });
   let subjects;
   try { subjects = getSubjectsFor(cls, sec); } catch (err) { return res.status(400).json({ error: err.message }); }
 
-  const { rows: exams } = await pool.query(
+  const { rows: allExams } = await pool.query(
     `SELECT e.id, e.exam_name FROM exams e JOIN academic_years ay ON ay.id = e.academic_year_id
      WHERE ay.is_current = true ORDER BY e.created_at`
   );
+  const exams = examId ? allExams.filter((e) => e.id === examId) : allExams;
+  if (examId && !exams.length) return res.status(404).json({ error: 'Exam not found' });
+
   const { rows: lockRows } = await pool.query(
     `SELECT l.exam_id, l.subject, l.locked FROM locks l
      JOIN exams e ON e.id = l.exam_id JOIN academic_years ay ON ay.id = e.academic_year_id
@@ -78,19 +84,22 @@ router.get('/lock-status', async (req, res) => {
   res.json({ fullyLocked: unlocked.length === 0, unlocked, examCount: exams.length });
 });
 
-// Consolidated rank card data (every exam in the current academic year,
-// side by side) for every student in one class+section.
+// Rank card data — by default every exam in the current academic year, side
+// by side (the full progress-report card). Pass examId to scope the card to
+// just that one exam instead.
 router.get('/cards', async (req, res) => {
-  const { class: cls, sec } = req.query;
+  const { class: cls, sec, examId } = req.query;
   if (!cls || !sec) return res.status(400).json({ error: 'class, sec required' });
   let subjects;
   try { subjects = getSubjectsFor(cls, sec); } catch (err) { return res.status(400).json({ error: err.message }); }
 
   const students = await loadStudents(cls, sec);
-  const { rows: exams } = await pool.query(
+  const { rows: allExams } = await pool.query(
     `SELECT e.id, e.exam_name FROM exams e JOIN academic_years ay ON ay.id = e.academic_year_id
      WHERE ay.is_current = true ORDER BY e.created_at`
   );
+  const exams = examId ? allExams.filter((e) => e.id === examId) : allExams;
+  if (examId && !exams.length) return res.status(404).json({ error: 'Exam not found' });
 
   const cards = {};
   for (const s of students) {
@@ -113,9 +122,10 @@ router.get('/cards', async (req, res) => {
   res.json(Object.values(cards).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)));
 });
 
-// One student's card (same shape as one entry of /cards).
+// One student's card (same shape as one entry of /cards). Pass examId to
+// scope it to just that one exam.
 router.get('/cards/:admissionNo', async (req, res) => {
-  const { class: cls, sec } = req.query;
+  const { class: cls, sec, examId } = req.query;
   const { admissionNo } = req.params;
   if (!cls || !sec) return res.status(400).json({ error: 'class, sec required' });
 
@@ -128,10 +138,12 @@ router.get('/cards/:admissionNo', async (req, res) => {
 
   let subjects;
   try { subjects = getSubjectsFor(cls, sec); } catch (err) { return res.status(400).json({ error: err.message }); }
-  const { rows: exams } = await pool.query(
+  const { rows: allExams } = await pool.query(
     `SELECT e.id, e.exam_name FROM exams e JOIN academic_years ay ON ay.id = e.academic_year_id
      WHERE ay.is_current = true ORDER BY e.created_at`
   );
+  const exams = examId ? allExams.filter((e) => e.id === examId) : allExams;
+  if (examId && !exams.length) return res.status(404).json({ error: 'Exam not found' });
 
   const student = studentRows[0];
   const card = { admissionNo: student.admission_no, name: student.name, class: cls, sec, examNo: student.exam_no, exams: [] };
