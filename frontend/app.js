@@ -298,11 +298,26 @@ function viewMarkEntry() {
   const card = el('div', { class: 'card' });
   const resultArea = el('div');
 
+  // Admin/AHM/SuperAdmin can enter marks for any class/section/subject, so
+  // they get the full curriculum dropdown. A plain teacher can only ever
+  // save marks for combinations granted in teacher_access (the backend
+  // enforces this with a 403), so restrict their dropdowns to exactly what
+  // they're granted — otherwise they can "successfully" pick a class/section/
+  // subject that gets silently rejected on Load, with no table or Save
+  // button ever appearing.
+  const fullAccess = state.user.isAdmin || state.user.isSuperAdmin || state.user.isAhm;
+
   const examSel = el('select');
   const clsSel = el('select');
   const secSel = el('select');
   const subjSel = el('select');
   const loadBtn = el('button', {}, 'Load');
+
+  if (!fullAccess && !state.access.length) {
+    card.appendChild(el('p', { class: 'muted' }, 'You have no class/section/subject access granted yet — ask your admin to grant it under Manage Teacher Logins.'));
+    wrap.appendChild(card);
+    return wrap;
+  }
 
   loadExams().then(() => {
     examSel.innerHTML = '';
@@ -315,10 +330,54 @@ function viewMarkEntry() {
   });
   examSel.onchange = () => { state.currentExamId = examSel.value || null; };
 
-  loadClassSections().then((rows) => {
+  function refreshSections() {
+    secSel.innerHTML = '';
+    subjSel.innerHTML = '';
+    if (!clsSel.value) return;
+    secSel.appendChild(el('option', { value: '' }, '-- section --'));
+    const secs = fullAccess
+      ? state.classSections.filter((r) => r.class === clsSel.value).map((r) => r.sec)
+      : [...new Set(state.access.filter((a) => a.class === clsSel.value).map((a) => a.sec))];
+    for (const s of secs) secSel.appendChild(el('option', { value: s }, s));
+  }
+  clsSel.onchange = () => { state.currentClass = clsSel.value || null; state.currentSection = null; refreshSections(); };
+
+  async function refreshSubjects() {
+    subjSel.innerHTML = '';
+    if (!clsSel.value || !secSel.value) return;
+    if (fullAccess) {
+      try {
+        const subjects = await api(`/exams/subjects?class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}`, { silent: true });
+        for (const s of subjects) subjSel.appendChild(el('option', { value: s }, s === 'Language' ? 'Tamil (Language)' : s));
+      } catch (err) {
+        subjSel.appendChild(el('option', { value: '' }, 'No subject set for this class/section'));
+      }
+      return;
+    }
+    const subjects = [...new Set(state.access.filter((a) => a.class === clsSel.value && a.sec === secSel.value).map((a) => a.subject))];
+    for (const s of subjects) subjSel.appendChild(el('option', { value: s }, s === 'Language' ? 'Tamil (Language)' : s));
+  }
+  secSel.onchange = () => { state.currentSection = secSel.value || null; refreshSubjects(); };
+
+  if (fullAccess) {
+    loadClassSections().then((rows) => {
+      clsSel.innerHTML = '';
+      clsSel.appendChild(el('option', { value: '' }, '-- class --'));
+      const classes = [...new Set(rows.map(r => r.class))];
+      for (const c of classes) clsSel.appendChild(el('option', { value: c }, c));
+      if (state.currentClass && classes.includes(state.currentClass)) {
+        clsSel.value = state.currentClass;
+        refreshSections();
+        if (state.currentSection) {
+          secSel.value = state.currentSection;
+          refreshSubjects();
+        }
+      }
+    });
+  } else {
     clsSel.innerHTML = '';
     clsSel.appendChild(el('option', { value: '' }, '-- class --'));
-    const classes = [...new Set(rows.map(r => r.class))];
+    const classes = [...new Set(state.access.map((a) => a.class))];
     for (const c of classes) clsSel.appendChild(el('option', { value: c }, c));
     if (state.currentClass && classes.includes(state.currentClass)) {
       clsSel.value = state.currentClass;
@@ -328,29 +387,7 @@ function viewMarkEntry() {
         refreshSubjects();
       }
     }
-  });
-
-  function refreshSections() {
-    secSel.innerHTML = '';
-    subjSel.innerHTML = '';
-    if (!clsSel.value) return;
-    secSel.appendChild(el('option', { value: '' }, '-- section --'));
-    const secs = state.classSections.filter(r => r.class === clsSel.value).map(r => r.sec);
-    for (const s of secs) secSel.appendChild(el('option', { value: s }, s));
   }
-  clsSel.onchange = () => { state.currentClass = clsSel.value || null; state.currentSection = null; refreshSections(); };
-
-  async function refreshSubjects() {
-    subjSel.innerHTML = '';
-    if (!clsSel.value || !secSel.value) return;
-    try {
-      const subjects = await api(`/exams/subjects?class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}`, { silent: true });
-      for (const s of subjects) subjSel.appendChild(el('option', { value: s }, s === 'Language' ? 'Tamil (Language)' : s));
-    } catch (err) {
-      subjSel.appendChild(el('option', { value: '' }, 'No subject set for this class/section'));
-    }
-  }
-  secSel.onchange = () => { state.currentSection = secSel.value || null; refreshSubjects(); };
 
   loadBtn.onclick = async () => {
     resultArea.innerHTML = '';
@@ -454,8 +491,8 @@ function viewExamConfig() {
   const configCard = el('div', { class: 'card' });
   configCard.appendChild(el('h3', {}, 'Set max / pass marks'));
   const examSel = el('select');
-  const clsInput = el('input', { placeholder: 'Class (e.g. VI)' });
-  const subjInput = el('input', { placeholder: 'Subject key (e.g. Tamil, Language, Bio-Botany)' });
+  const clsSel = el('select');
+  const subjSel = el('select');
   const maxT = el('input', { type: 'number', placeholder: 'Max Theory' });
   const passT = el('input', { type: 'number', placeholder: 'Pass Theory' });
   const maxI = el('input', { type: 'number', placeholder: 'Max Internal' });
@@ -475,17 +512,35 @@ function viewExamConfig() {
     }
   });
   examSel.onchange = () => { state.currentExamId = examSel.value || null; };
-  if (state.currentClass) clsInput.value = state.currentClass;
-  clsInput.addEventListener('change', () => { state.currentClass = clsInput.value || null; });
-  const clsSuggestLists = attachClassSectionSuggestions(clsInput, null);
+
+  // Full curriculum class list (VI–XII), not just classes that already have
+  // students — Config should let you set up a class before anyone's enrolled.
+  const ALL_CLASSES = ['VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII'];
+  clsSel.appendChild(el('option', { value: '' }, '-- class --'));
+  for (const c of ALL_CLASSES) clsSel.appendChild(el('option', { value: c }, c));
+  if (state.currentClass && ALL_CLASSES.includes(state.currentClass)) clsSel.value = state.currentClass;
+
+  async function refreshConfigSubjects() {
+    subjSel.innerHTML = '';
+    if (!clsSel.value) { subjSel.appendChild(el('option', { value: '' }, '-- pick a class first --')); return; }
+    try {
+      const subjects = await api(`/exams/subjects-for-class?class=${encodeURIComponent(clsSel.value)}`, { silent: true });
+      subjSel.appendChild(el('option', { value: '' }, '-- subject --'));
+      for (const s of subjects) subjSel.appendChild(el('option', { value: s }, s === 'Language' ? 'Tamil (Language)' : s));
+    } catch {
+      subjSel.appendChild(el('option', { value: '' }, 'Could not load subjects'));
+    }
+  }
+  clsSel.onchange = () => { state.currentClass = clsSel.value || null; refreshConfigSubjects(); };
+  refreshConfigSubjects();
 
   saveConfigBtn.onclick = async () => {
-    if (!examSel.value || !clsInput.value || !subjInput.value) return toast('Exam, class, subject required');
+    if (!examSel.value || !clsSel.value || !subjSel.value) return toast('Exam, class, subject required');
     try {
       await api(`/exams/${examSel.value}/config`, {
         method: 'PUT',
         body: {
-          class: clsInput.value, subject: subjInput.value,
+          class: clsSel.value, subject: subjSel.value,
           maxTheory: Number(maxT.value) || 0, passTheory: Number(passT.value) || 0,
           maxInternal: Number(maxI.value) || 0, passInternal: Number(passI.value) || 0,
           maxPractical: Number(maxP.value) || 0, passPractical: Number(passP.value) || 0,
@@ -497,13 +552,12 @@ function viewExamConfig() {
 
   configCard.appendChild(el('div', { class: 'row' }, [
     el('div', {}, [el('label', {}, 'Exam'), examSel]),
-    el('div', {}, [el('label', {}, 'Class'), clsInput]),
-    el('div', {}, [el('label', {}, 'Subject key'), subjInput]),
+    el('div', {}, [el('label', {}, 'Class'), clsSel]),
+    el('div', {}, [el('label', {}, 'Subject key'), subjSel]),
   ]));
-  configCard.appendChild(el('p', { class: 'muted' }, 'Tip: XI/XII use internal key "Language" for what displays as "Tamil". Bio-Botany and Bio-Zoology are configured separately.'));
+  configCard.appendChild(el('p', { class: 'muted' }, 'Tip: XI/XII use internal key "Language" for what displays as "Tamil". Bio-Botany and Bio-Zoology are configured separately — pick a class to see its full subject list.'));
   configCard.appendChild(el('div', { class: 'row' }, [maxT, passT, maxI, passI, maxP, passP]));
   configCard.appendChild(el('div', { style: 'margin-top:14px' }, saveConfigBtn));
-  for (const dl of clsSuggestLists) configCard.appendChild(dl);
   wrap.appendChild(configCard);
   wrap.appendChild(configArea);
   return wrap;
