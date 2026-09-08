@@ -786,9 +786,17 @@ function viewRankHub() {
   wrap.appendChild(pickCard);
   wrap.appendChild(rankListArea);
 
-  // ---- Rank Card generation (consolidates every exam so far) ----
+  // ---- Rank Card generation ----
   const rcCard = el('div', { class: 'card' });
-  rcCard.appendChild(el('h3', {}, 'Generate Rank Card (every exam so far, for this student)'));
+  rcCard.appendChild(el('h3', {}, 'Generate Rank Card'));
+  const scopeSel = el('select', {}, [
+    el('option', { value: 'all' }, 'All exams so far (full progress report)'),
+    el('option', { value: 'one' }, 'This exam only (the one picked above)'),
+  ]);
+  rcCard.appendChild(el('p', { class: 'muted' }, [
+    'Choose whether the card covers every exam recorded so far, or just the single exam selected above. ',
+    el('b', {}, 'Note:'), ' "This exam only" still requires that exam\'s subjects (not every exam\'s) to be locked before generating a whole section.',
+  ]));
   const statusArea = el('div');
   const cardArea = el('div', { id: 'rankCardArea' });
   const admInput = el('input', { placeholder: 'Admission No (optional — leave blank for whole section)' });
@@ -801,6 +809,8 @@ function viewRankHub() {
     cardArea.innerHTML = '';
     printBtn.style.display = 'none';
     if (!clsSel.value || !secSel.value) { toast('Select class and section first (above).'); return; }
+    if (scopeSel.value === 'one' && !examSel.value) { toast('Select an exam above first, or switch to "All exams".'); return; }
+    const examScopeParam = scopeSel.value === 'one' ? `&examId=${examSel.value}` : '';
 
     try {
       const school = await api('/settings', { silent: true });
@@ -809,13 +819,13 @@ function viewRankHub() {
         // Single student — always allowed as a preview, no lock requirement
         // (matches the old system: "View Rank Card" previews anytime; only
         // bulk section generation requires everything locked first).
-        const oneCard = await api(`/ranks/cards/${encodeURIComponent(admInput.value.trim())}?class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}`);
+        const oneCard = await api(`/ranks/cards/${encodeURIComponent(admInput.value.trim())}?class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}${examScopeParam}`);
         cardArea.appendChild(buildRankCardEl(oneCard, school));
         printBtn.style.display = '';
         return;
       }
 
-      const lockStatus = await api(`/ranks/lock-status?class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}`, { silent: true });
+      const lockStatus = await api(`/ranks/lock-status?class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}${examScopeParam}`, { silent: true });
       if (!lockStatus.fullyLocked) {
         const list = lockStatus.unlocked.map((u) => `${u.examName} — ${displayLabelFor(u.subject)}`).join(', ');
         statusArea.appendChild(el('div', { class: 'locked-banner' },
@@ -823,7 +833,7 @@ function viewRankHub() {
         return;
       }
 
-      const cards = await api(`/ranks/cards?class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}`);
+      const cards = await api(`/ranks/cards?class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}${examScopeParam}`);
       if (!cards.length) { statusArea.appendChild(el('p', { class: 'muted' }, 'No students found.')); return; }
       for (const c of cards) cardArea.appendChild(buildRankCardEl(c, school));
       printBtn.style.display = '';
@@ -831,6 +841,7 @@ function viewRankHub() {
   };
 
   rcCard.appendChild(el('div', { class: 'row' }, [
+    el('div', {}, [el('label', {}, 'Which exams'), scopeSel]),
     el('div', {}, [el('label', {}, 'Admission No (optional)'), admInput]),
   ]));
   rcCard.appendChild(el('div', { style: 'margin-top:14px' }, [genBtn, printBtn]));
