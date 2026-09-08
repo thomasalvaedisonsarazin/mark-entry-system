@@ -8,8 +8,37 @@ const state = {
   view: 'login',
   exams: [],
   currentExamId: null,
+  currentClass: null,
+  currentSection: null,
   classSections: null, // [{class, sec}, ...] — cached after first load
 };
+
+/**
+ * Attaches <datalist> suggestions (existing classes, and existing sections
+ * for that class) to a plain text Class/Section input pair, so screens that
+ * need free text (new students, new access grants — a real select would
+ * block entering a brand-new class/section) still show what already exists
+ * instead of forcing the user to remember or retype it exactly.
+ * Returns the <datalist> elements — append them anywhere in the DOM.
+ */
+function attachClassSectionSuggestions(clsInput, secInput) {
+  const clsListId = 'clsSuggest-' + Math.random().toString(36).slice(2);
+  clsInput.setAttribute('list', clsListId);
+  const clsList = el('datalist', { id: clsListId });
+  let secList = null;
+  if (secInput) {
+    const secListId = 'secSuggest-' + Math.random().toString(36).slice(2);
+    secInput.setAttribute('list', secListId);
+    secList = el('datalist', { id: secListId });
+  }
+  loadClassSections().then((rows) => {
+    for (const c of [...new Set(rows.map((r) => r.class))]) clsList.appendChild(el('option', { value: c }));
+    if (secList) {
+      for (const s of [...new Set(rows.map((r) => r.sec))]) secList.appendChild(el('option', { value: s }));
+    }
+  });
+  return secList ? [clsList, secList] : [clsList];
+}
 
 async function loadClassSections() {
   if (state.classSections) return state.classSections;
@@ -284,12 +313,21 @@ function viewMarkEntry() {
       examSel.appendChild(opt);
     }
   });
+  examSel.onchange = () => { state.currentExamId = examSel.value || null; };
 
   loadClassSections().then((rows) => {
     clsSel.innerHTML = '';
     clsSel.appendChild(el('option', { value: '' }, '-- class --'));
     const classes = [...new Set(rows.map(r => r.class))];
     for (const c of classes) clsSel.appendChild(el('option', { value: c }, c));
+    if (state.currentClass && classes.includes(state.currentClass)) {
+      clsSel.value = state.currentClass;
+      refreshSections();
+      if (state.currentSection) {
+        secSel.value = state.currentSection;
+        refreshSubjects();
+      }
+    }
   });
 
   function refreshSections() {
@@ -300,7 +338,7 @@ function viewMarkEntry() {
     const secs = state.classSections.filter(r => r.class === clsSel.value).map(r => r.sec);
     for (const s of secs) secSel.appendChild(el('option', { value: s }, s));
   }
-  clsSel.onchange = () => { refreshSections(); };
+  clsSel.onchange = () => { state.currentClass = clsSel.value || null; state.currentSection = null; refreshSections(); };
 
   async function refreshSubjects() {
     subjSel.innerHTML = '';
@@ -312,7 +350,7 @@ function viewMarkEntry() {
       subjSel.appendChild(el('option', { value: '' }, 'No subject set for this class/section'));
     }
   }
-  secSel.onchange = refreshSubjects;
+  secSel.onchange = () => { state.currentSection = secSel.value || null; refreshSubjects(); };
 
   loadBtn.onclick = async () => {
     resultArea.innerHTML = '';
@@ -436,6 +474,10 @@ function viewExamConfig() {
       examSel.appendChild(opt);
     }
   });
+  examSel.onchange = () => { state.currentExamId = examSel.value || null; };
+  if (state.currentClass) clsInput.value = state.currentClass;
+  clsInput.addEventListener('change', () => { state.currentClass = clsInput.value || null; });
+  const clsSuggestLists = attachClassSectionSuggestions(clsInput, null);
 
   saveConfigBtn.onclick = async () => {
     if (!examSel.value || !clsInput.value || !subjInput.value) return toast('Exam, class, subject required');
@@ -461,6 +503,7 @@ function viewExamConfig() {
   configCard.appendChild(el('p', { class: 'muted' }, 'Tip: XI/XII use internal key "Language" for what displays as "Tamil". Bio-Botany and Bio-Zoology are configured separately.'));
   configCard.appendChild(el('div', { class: 'row' }, [maxT, passT, maxI, passI, maxP, passP]));
   configCard.appendChild(el('div', { style: 'margin-top:14px' }, saveConfigBtn));
+  for (const dl of clsSuggestLists) configCard.appendChild(dl);
   wrap.appendChild(configCard);
   wrap.appendChild(configArea);
   return wrap;
@@ -475,9 +518,10 @@ function viewLocking() {
   wrap.appendChild(el('h2', {}, 'Locking'));
   const card = el('div', { class: 'card' });
   const examSel = el('select');
-  const clsInput = el('input', { placeholder: 'Class' });
-  const secInput = el('input', { placeholder: 'Section' });
-  const subjInput = el('input', { placeholder: 'Subject key (blank = whole section)' });
+  const clsSel = el('select');
+  const secSel = el('select');
+  const subjInput = el('input', { placeholder: 'Subject key (blank = whole section)', list: 'lockSubjSuggest' });
+  const subjList = el('datalist', { id: 'lockSubjSuggest' });
   const status = el('div', { class: 'muted', style: 'margin-top:10px' });
 
   loadExams().then(() => {
@@ -490,10 +534,42 @@ function viewLocking() {
     }
   });
 
-  async function checkStatus() {
-    if (!examSel.value || !clsInput.value || !secInput.value) return;
+  function refreshSections() {
+    secSel.innerHTML = '';
+    secSel.appendChild(el('option', { value: '' }, '-- section --'));
+    if (!clsSel.value) return;
+    const secs = state.classSections.filter((r) => r.class === clsSel.value).map((r) => r.sec);
+    for (const s of secs) secSel.appendChild(el('option', { value: s }, s));
+  }
+
+  async function refreshSubjectSuggestions() {
+    subjList.innerHTML = '';
+    if (!clsSel.value || !secSel.value) return;
     try {
-      const r = await api(`/locks/section-fully-locked?examId=${examSel.value}&class=${encodeURIComponent(clsInput.value)}&sec=${encodeURIComponent(secInput.value)}`, { silent: true });
+      const subjects = await api(`/exams/subjects?class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}`, { silent: true });
+      for (const s of subjects) subjList.appendChild(el('option', { value: s }));
+    } catch {}
+  }
+
+  loadClassSections().then((rows) => {
+    clsSel.innerHTML = '';
+    clsSel.appendChild(el('option', { value: '' }, '-- class --'));
+    const classes = [...new Set(rows.map((r) => r.class))];
+    for (const c of classes) clsSel.appendChild(el('option', { value: c }, c));
+    if (state.currentClass && classes.includes(state.currentClass)) {
+      clsSel.value = state.currentClass;
+      refreshSections();
+      if (state.currentSection) {
+        secSel.value = state.currentSection;
+        refreshSubjectSuggestions();
+      }
+    }
+  });
+
+  async function checkStatus() {
+    if (!examSel.value || !clsSel.value || !secSel.value) return;
+    try {
+      const r = await api(`/locks/section-fully-locked?examId=${examSel.value}&class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}`, { silent: true });
       status.textContent = r.fullyLocked
         ? `Fully locked — ${r.lockedSubjects.length}/${r.subjects.length} subjects. Rank Cards may be generated.`
         : `Not fully locked — ${r.lockedSubjects.length}/${r.subjects.length} subjects locked (${r.subjects.filter((s) => !r.lockedSubjects.includes(s)).join(', ')} still open).`;
@@ -508,17 +584,17 @@ function viewLocking() {
   const unlockAllBtn = el('button', { class: 'secondary' }, 'Unlock ALL subjects for section');
 
   async function toggleOne(locked) {
-    if (!examSel.value || !clsInput.value || !secInput.value || !subjInput.value) return toast('Exam, class, section, subject required for single-subject toggle');
+    if (!examSel.value || !clsSel.value || !secSel.value || !subjInput.value) return toast('Exam, class, section, subject required for single-subject toggle');
     try {
-      await api('/locks/toggle', { method: 'POST', body: { examId: examSel.value, class: clsInput.value, sec: secInput.value, subject: subjInput.value, locked } });
+      await api('/locks/toggle', { method: 'POST', body: { examId: examSel.value, class: clsSel.value, sec: secSel.value, subject: subjInput.value, locked } });
       toast(locked ? 'Locked.' : 'Unlocked.', 'success');
       checkStatus();
     } catch {}
   }
   async function toggleAll(locked) {
-    if (!examSel.value || !clsInput.value || !secInput.value) return toast('Exam, class, section required');
+    if (!examSel.value || !clsSel.value || !secSel.value) return toast('Exam, class, section required');
     try {
-      await api('/locks/lock-all', { method: 'POST', body: { examId: examSel.value, class: clsInput.value, sec: secInput.value, locked } });
+      await api('/locks/lock-all', { method: 'POST', body: { examId: examSel.value, class: clsSel.value, sec: secSel.value, locked } });
       toast(locked ? 'All subjects locked.' : 'All subjects unlocked.', 'success');
       checkStatus();
     } catch {}
@@ -528,14 +604,17 @@ function viewLocking() {
   unlockOneBtn.onclick = () => toggleOne(false);
   lockAllBtn.onclick = () => toggleAll(true);
   unlockAllBtn.onclick = () => toggleAll(false);
-  [examSel, clsInput, secInput].forEach((i) => i.addEventListener('change', checkStatus));
+  examSel.onchange = () => { state.currentExamId = examSel.value || null; checkStatus(); };
+  clsSel.onchange = () => { state.currentClass = clsSel.value || null; state.currentSection = null; refreshSections(); refreshSubjectSuggestions(); checkStatus(); };
+  secSel.onchange = () => { state.currentSection = secSel.value || null; refreshSubjectSuggestions(); checkStatus(); };
 
   card.appendChild(el('div', { class: 'row' }, [
     el('div', {}, [el('label', {}, 'Exam'), examSel]),
-    el('div', {}, [el('label', {}, 'Class'), clsInput]),
-    el('div', {}, [el('label', {}, 'Section'), secInput]),
+    el('div', {}, [el('label', {}, 'Class'), clsSel]),
+    el('div', {}, [el('label', {}, 'Section'), secSel]),
     el('div', {}, [el('label', {}, 'Subject key (optional)'), subjInput]),
   ]));
+  card.appendChild(subjList);
   card.appendChild(el('div', { class: 'row', style: 'margin-top:14px' }, [lockOneBtn, unlockOneBtn, lockAllBtn, unlockAllBtn]));
   card.appendChild(status);
   wrap.appendChild(card);
@@ -569,6 +648,7 @@ function viewStudents() {
   };
   addCard.appendChild(el('div', { class: 'row' }, [cls, sec, adm, examNo, name]));
   addCard.appendChild(el('div', { style: 'margin-top:14px' }, addBtn));
+  for (const dl of attachClassSectionSuggestions(cls, sec)) addCard.appendChild(dl);
   wrap.appendChild(addCard);
 
   const listCard = el('div', { class: 'card' });
@@ -578,6 +658,7 @@ function viewStudents() {
   const tableWrap = el('div');
   filterBtn.onclick = () => loadList();
   listCard.appendChild(el('div', { class: 'row' }, [filterCls, filterBtn]));
+  for (const dl of attachClassSectionSuggestions(filterCls, null)) listCard.appendChild(dl);
   listCard.appendChild(tableWrap);
   wrap.appendChild(listCard);
 
@@ -655,6 +736,7 @@ function viewTeachers() {
   };
   grantCard.appendChild(el('div', { class: 'row' }, [empIdInput, gCls, gSec, gSubj]));
   grantCard.appendChild(el('div', { style: 'margin-top:14px' }, grantBtn));
+  for (const dl of attachClassSectionSuggestions(gCls, gSec)) grantCard.appendChild(dl);
   wrap.appendChild(grantCard);
 
   const listCard = el('div', { class: 'card' });
@@ -753,18 +835,28 @@ function viewRankHub() {
       examSel.appendChild(opt);
     }
   });
-  loadClassSections().then((rows) => {
-    clsSel.innerHTML = '';
-    clsSel.appendChild(el('option', { value: '' }, '-- class --'));
-    for (const c of [...new Set(rows.map((r) => r.class))]) clsSel.appendChild(el('option', { value: c }, c));
-  });
-  clsSel.onchange = () => {
+  examSel.onchange = () => { state.currentExamId = examSel.value || null; };
+
+  function refreshSections() {
     secSel.innerHTML = '';
     secSel.appendChild(el('option', { value: '' }, '-- section --'));
     for (const s of state.classSections.filter((r) => r.class === clsSel.value).map((r) => r.sec)) {
       secSel.appendChild(el('option', { value: s }, s));
     }
-  };
+  }
+  loadClassSections().then((rows) => {
+    clsSel.innerHTML = '';
+    clsSel.appendChild(el('option', { value: '' }, '-- class --'));
+    const classes = [...new Set(rows.map((r) => r.class))];
+    for (const c of classes) clsSel.appendChild(el('option', { value: c }, c));
+    if (state.currentClass && classes.includes(state.currentClass)) {
+      clsSel.value = state.currentClass;
+      refreshSections();
+      if (state.currentSection) secSel.value = state.currentSection;
+    }
+  });
+  clsSel.onchange = () => { state.currentClass = clsSel.value || null; state.currentSection = null; refreshSections(); };
+  secSel.onchange = () => { state.currentSection = secSel.value || null; };
 
   const rankListArea = el('div');
   loadBtn.onclick = async () => {
