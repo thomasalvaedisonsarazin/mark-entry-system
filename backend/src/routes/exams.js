@@ -1,7 +1,7 @@
 import express from 'express';
 import { pool } from '../db.js';
 import { requireAuth, requireRole } from '../auth.js';
-import { getSubjectsFor } from '../subjects.js';
+import { getSubjectsFor, SENIOR_GROUPS, FIXED_SUBJECTS_VI_TO_X } from '../subjects.js';
 
 export const router = express.Router();
 router.use(requireAuth);
@@ -73,6 +73,22 @@ router.get('/subjects', (req, res) => {
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
+});
+
+// Union of subjects across every section-group for a class — used by the Exam
+// Config screen's Subject dropdown, since exam_config is keyed by class only
+// (no section), so it needs every subject that could apply to that class.
+router.get('/subjects-for-class', (req, res) => {
+  const { class: cls } = req.query;
+  if (!cls) return res.status(400).json({ error: 'class required' });
+  const c = String(cls).toUpperCase().trim();
+  if (c === 'XI' || c === 'XII') {
+    const seen = new Set();
+    const ordered = [];
+    for (const g of SENIOR_GROUPS) for (const s of g.subjects) if (!seen.has(s)) { seen.add(s); ordered.push(s); }
+    return res.json(ordered);
+  }
+  res.json(FIXED_SUBJECTS_VI_TO_X.slice());
 });
 
 // Max/pass config per exam+class+subject.
