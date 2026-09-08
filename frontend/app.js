@@ -51,6 +51,11 @@ function renderApp() {
   app.appendChild(topbar());
   const container = document.createElement('div');
   container.className = 'container';
+  if (state.view !== 'dashboard') {
+    const back = el('a', { class: 'back-link' }, '← Back to Dashboard');
+    back.onclick = () => { state.view = 'dashboard'; renderApp(); };
+    container.appendChild(back);
+  }
   container.appendChild(renderView());
   app.appendChild(container);
 }
@@ -143,15 +148,6 @@ function topbar() {
     return a;
   };
   nav.appendChild(link('Dashboard', 'dashboard'));
-  nav.appendChild(link('Mark Entry', 'markEntry'));
-  if (state.user.isAdmin || state.user.isSuperAdmin) {
-    nav.appendChild(link('Exams & Config', 'examConfig'));
-    nav.appendChild(link('Locking', 'locking'));
-    nav.appendChild(link('Rank List', 'rankList'));
-    nav.appendChild(link('Rank Cards', 'rankCards'));
-    nav.appendChild(link('Students', 'students'));
-    nav.appendChild(link('Teachers', 'teachers'));
-  }
   const logout = el('a', {}, 'Log out');
   logout.onclick = async () => {
     try { await api('/auth/logout', { method: 'POST', silent: true }); } catch {}
@@ -178,25 +174,69 @@ function renderView() {
     case 'markEntry': return viewMarkEntry();
     case 'examConfig': return viewExamConfig();
     case 'locking': return viewLocking();
-    case 'rankList': return viewRankList();
-    case 'rankCards': return viewRankCards();
+    case 'rankHub': return viewRankHub();
     case 'students': return viewStudents();
     case 'teachers': return viewTeachers();
     default: return viewDashboard();
   }
 }
 
+/**
+ * Dashboard is a "Choose Action" hub, same idea as the old Apps Script
+ * system: pick an exam for context (used to pre-select it on screens that
+ * need one), then click a card for the thing you actually want to do.
+ * Keeps the top nav down to just Dashboard + Log out instead of a long
+ * flat list of tabs.
+ */
 function viewDashboard() {
   const wrap = el('div');
   wrap.appendChild(el('h2', {}, `Welcome, ${state.user.name}`));
-  const card = el('div', { class: 'card' });
-  card.appendChild(el('p', {}, 'This is the MVP core loop: create an exam, configure max/pass marks, enter and lock marks per subject.'));
+
   if (!state.user.isAdmin && !state.user.isSuperAdmin) {
+    const card = el('div', { class: 'card' });
+    card.appendChild(el('p', {}, 'Enter marks for your assigned class/section/subjects.'));
     card.appendChild(el('p', { class: 'muted' }, `Your assigned class/section/subjects: ${
       state.access.length ? state.access.map((a) => `${a.class}-${a.sec} ${a.subject}`).join(', ') : 'none yet — ask your admin to grant access.'
     }`));
+    const goBtn = el('button', {}, 'Enter Marks');
+    goBtn.onclick = () => { state.view = 'markEntry'; renderApp(); };
+    card.appendChild(el('div', { style: 'margin-top:14px' }, goBtn));
+    wrap.appendChild(card);
+    return wrap;
   }
-  wrap.appendChild(card);
+
+  const examCard = el('div', { class: 'card' });
+  const examSel = el('select');
+  examSel.appendChild(el('option', { value: '' }, '-- choose an exam for context --'));
+  loadExams().then(() => {
+    for (const ex of state.exams) {
+      const opt = el('option', { value: ex.id }, `${ex.exam_name} (${ex.year_label})`);
+      if (ex.id === state.currentExamId) opt.selected = true;
+      examSel.appendChild(opt);
+    }
+  });
+  examSel.onchange = () => { state.currentExamId = examSel.value || null; };
+  examCard.appendChild(el('label', {}, 'Current exam'));
+  examCard.appendChild(examSel);
+  examCard.appendChild(el('p', { class: 'muted' }, 'Pre-selects this exam on the screens below — Mark Entry, Config, and Rank List all read from it. Rank Cards always show every exam so far, regardless of this choice.'));
+  wrap.appendChild(examCard);
+
+  const grid = el('div', { class: 'action-grid' });
+  const actionCard = (title, desc, view) => {
+    const c = el('div', { class: 'action-card' }, [
+      el('h3', {}, title),
+      el('p', {}, desc),
+    ]);
+    c.onclick = () => { state.view = view; renderApp(); };
+    return c;
+  };
+  grid.appendChild(actionCard('Enter Marks', 'Theory / Internal / Practical for one class-section-subject', 'markEntry'));
+  grid.appendChild(actionCard('Configure Max & Pass Marks', 'Set max marks and minimum pass marks per subject', 'examConfig'));
+  grid.appendChild(actionCard('Locking', 'Lock or unlock a subject so marks can no longer be edited', 'locking'));
+  grid.appendChild(actionCard('Rank List & Rank Cards', 'View ranking and generate printable rank cards', 'rankHub'));
+  grid.appendChild(actionCard('Manage Teacher Logins', 'View accounts, grant access, reset a forgotten password', 'teachers'));
+  grid.appendChild(actionCard('Manage Students', 'Add, edit, or transfer a student between class/section', 'students'));
+  wrap.appendChild(grid);
   return wrap;
 }
 
@@ -238,7 +278,11 @@ function viewMarkEntry() {
   loadExams().then(() => {
     examSel.innerHTML = '';
     examSel.appendChild(el('option', { value: '' }, '-- exam --'));
-    for (const ex of state.exams) examSel.appendChild(el('option', { value: ex.id }, `${ex.exam_name} (${ex.year_label})`));
+    for (const ex of state.exams) {
+      const opt = el('option', { value: ex.id }, `${ex.exam_name} (${ex.year_label})`);
+      if (ex.id === state.currentExamId) opt.selected = true;
+      examSel.appendChild(opt);
+    }
   });
 
   loadClassSections().then((rows) => {
@@ -386,7 +430,11 @@ function viewExamConfig() {
   loadExams().then(() => {
     examSel.innerHTML = '';
     examSel.appendChild(el('option', { value: '' }, '-- exam --'));
-    for (const ex of state.exams) examSel.appendChild(el('option', { value: ex.id }, `${ex.exam_name} (${ex.year_label})`));
+    for (const ex of state.exams) {
+      const opt = el('option', { value: ex.id }, `${ex.exam_name} (${ex.year_label})`);
+      if (ex.id === state.currentExamId) opt.selected = true;
+      examSel.appendChild(opt);
+    }
   });
 
   saveConfigBtn.onclick = async () => {
@@ -435,7 +483,11 @@ function viewLocking() {
   loadExams().then(() => {
     examSel.innerHTML = '';
     examSel.appendChild(el('option', { value: '' }, '-- exam --'));
-    for (const ex of state.exams) examSel.appendChild(el('option', { value: ex.id }, `${ex.exam_name} (${ex.year_label})`));
+    for (const ex of state.exams) {
+      const opt = el('option', { value: ex.id }, `${ex.exam_name} (${ex.year_label})`);
+      if (ex.id === state.currentExamId) opt.selected = true;
+      examSel.appendChild(opt);
+    }
   });
 
   async function checkStatus() {
@@ -639,55 +691,6 @@ function viewTeachers() {
 // Admin: Rank List
 // ---------------------------------------------------------------------------
 
-function viewRankList() {
-  const wrap = el('div');
-  wrap.appendChild(el('h2', {}, 'Rank List'));
-  const card = el('div', { class: 'card' });
-  const resultArea = el('div');
-
-  const examSel = el('select');
-  const clsSel = el('select');
-  const secSel = el('select');
-  const loadBtn = el('button', {}, 'Load');
-
-  loadExams().then(() => {
-    examSel.innerHTML = '';
-    examSel.appendChild(el('option', { value: '' }, '-- exam --'));
-    for (const ex of state.exams) examSel.appendChild(el('option', { value: ex.id }, `${ex.exam_name} (${ex.year_label})`));
-  });
-  loadClassSections().then((rows) => {
-    clsSel.innerHTML = '';
-    clsSel.appendChild(el('option', { value: '' }, '-- class --'));
-    for (const c of [...new Set(rows.map((r) => r.class))]) clsSel.appendChild(el('option', { value: c }, c));
-  });
-  clsSel.onchange = () => {
-    secSel.innerHTML = '';
-    secSel.appendChild(el('option', { value: '' }, '-- section --'));
-    for (const s of state.classSections.filter((r) => r.class === clsSel.value).map((r) => r.sec)) {
-      secSel.appendChild(el('option', { value: s }, s));
-    }
-  };
-
-  loadBtn.onclick = async () => {
-    resultArea.innerHTML = '';
-    if (!examSel.value || !clsSel.value || !secSel.value) { toast('Select exam, class, and section first.'); return; }
-    try {
-      const rows = await api(`/ranks/list?examId=${examSel.value}&class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}`);
-      resultArea.appendChild(rankListTable(rows));
-    } catch {}
-  };
-
-  card.appendChild(el('div', { class: 'row' }, [
-    el('div', {}, [el('label', {}, 'Exam'), examSel]),
-    el('div', {}, [el('label', {}, 'Class'), clsSel]),
-    el('div', {}, [el('label', {}, 'Section'), secSel]),
-  ]));
-  card.appendChild(el('div', { style: 'margin-top:14px' }, loadBtn));
-  wrap.appendChild(card);
-  wrap.appendChild(resultArea);
-  return wrap;
-}
-
 function rankListTable(rows) {
   const wrap = el('div', { class: 'card' });
   if (!rows.length) { wrap.appendChild(el('p', { class: 'muted' }, 'No students found.')); return wrap; }
@@ -724,23 +727,32 @@ function displayLabelFor(subjectKey) {
 }
 
 // ---------------------------------------------------------------------------
-// Admin: Rank Cards (printable)
+// Admin: Rank List + Rank Cards — one combined screen, matching the old
+// system's layout: pick exam/class/section once, see the Rank List for that
+// exam, then generate printable Rank Cards below (cards always show every
+// exam created so far, regardless of which exam is picked above — same as
+// the old system's behavior).
 // ---------------------------------------------------------------------------
 
-function viewRankCards() {
+function viewRankHub() {
   const wrap = el('div');
-  wrap.appendChild(el('h2', {}, 'Rank Cards'));
-  const card = el('div', { class: 'card' });
-  const statusArea = el('div');
-  const cardArea = el('div', { id: 'rankCardArea' });
+  wrap.appendChild(el('h2', {}, 'Rank List & Rank Cards'));
 
+  const pickCard = el('div', { class: 'card' });
+  const examSel = el('select');
   const clsSel = el('select');
   const secSel = el('select');
-  const admInput = el('input', { placeholder: 'Admission No (optional — leave blank for whole section)' });
-  const genBtn = el('button', {}, 'Generate');
-  const printBtn = el('button', { class: 'secondary', style: 'display:none' }, 'Print / Save as PDF');
-  printBtn.onclick = () => window.print();
+  const loadBtn = el('button', {}, 'Load Rank List');
 
+  loadExams().then(() => {
+    examSel.innerHTML = '';
+    examSel.appendChild(el('option', { value: '' }, '-- exam --'));
+    for (const ex of state.exams) {
+      const opt = el('option', { value: ex.id }, `${ex.exam_name} (${ex.year_label})`);
+      if (ex.id === state.currentExamId) opt.selected = true;
+      examSel.appendChild(opt);
+    }
+  });
   loadClassSections().then((rows) => {
     clsSel.innerHTML = '';
     clsSel.appendChild(el('option', { value: '' }, '-- class --'));
@@ -754,11 +766,41 @@ function viewRankCards() {
     }
   };
 
+  const rankListArea = el('div');
+  loadBtn.onclick = async () => {
+    rankListArea.innerHTML = '';
+    if (!examSel.value || !clsSel.value || !secSel.value) { toast('Select exam, class, and section first.'); return; }
+    try {
+      const rows = await api(`/ranks/list?examId=${examSel.value}&class=${encodeURIComponent(clsSel.value)}&sec=${encodeURIComponent(secSel.value)}`);
+      rankListArea.appendChild(el('h3', {}, `Rank List — ${examSel.selectedOptions[0].textContent}`));
+      rankListArea.appendChild(rankListTable(rows));
+    } catch {}
+  };
+
+  pickCard.appendChild(el('div', { class: 'row' }, [
+    el('div', {}, [el('label', {}, 'Exam'), examSel]),
+    el('div', {}, [el('label', {}, 'Class'), clsSel]),
+    el('div', {}, [el('label', {}, 'Section'), secSel]),
+  ]));
+  pickCard.appendChild(el('div', { style: 'margin-top:14px' }, loadBtn));
+  wrap.appendChild(pickCard);
+  wrap.appendChild(rankListArea);
+
+  // ---- Rank Card generation (consolidates every exam so far) ----
+  const rcCard = el('div', { class: 'card' });
+  rcCard.appendChild(el('h3', {}, 'Generate Rank Card (every exam so far, for this student)'));
+  const statusArea = el('div');
+  const cardArea = el('div', { id: 'rankCardArea' });
+  const admInput = el('input', { placeholder: 'Admission No (optional — leave blank for whole section)' });
+  const genBtn = el('button', {}, 'Generate');
+  const printBtn = el('button', { class: 'secondary', style: 'display:none' }, 'Print / Save as PDF');
+  printBtn.onclick = () => window.print();
+
   genBtn.onclick = async () => {
     statusArea.innerHTML = '';
     cardArea.innerHTML = '';
     printBtn.style.display = 'none';
-    if (!clsSel.value || !secSel.value) { toast('Select class and section first.'); return; }
+    if (!clsSel.value || !secSel.value) { toast('Select class and section first (above).'); return; }
 
     try {
       const school = await api('/settings', { silent: true });
@@ -788,13 +830,11 @@ function viewRankCards() {
     } catch {}
   };
 
-  card.appendChild(el('div', { class: 'row' }, [
-    el('div', {}, [el('label', {}, 'Class'), clsSel]),
-    el('div', {}, [el('label', {}, 'Section'), secSel]),
+  rcCard.appendChild(el('div', { class: 'row' }, [
     el('div', {}, [el('label', {}, 'Admission No (optional)'), admInput]),
   ]));
-  card.appendChild(el('div', { style: 'margin-top:14px' }, [genBtn, printBtn]));
-  wrap.appendChild(card);
+  rcCard.appendChild(el('div', { style: 'margin-top:14px' }, [genBtn, printBtn]));
+  wrap.appendChild(rcCard);
   wrap.appendChild(statusArea);
   wrap.appendChild(cardArea);
   return wrap;
